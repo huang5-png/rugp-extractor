@@ -162,40 +162,73 @@ class RugpExtractor:
     def extract_dialogues_from_bytecode(dec: bytes) -> List[Dict[str, Optional[str]]]:
         """
         Extract dialogue lines (with speaker names) and narrations from decrypted rUGP bytecode.
-        Opcodes: (0x60 | 0x1F | 0x20) followed by 1-byte length prefix.
-        Control byte: 0x03 is converted to newline.
+        Opcodes: \x60.\x00. followed by length prefix and CP932 encoded text.
+        Applies rigorous filtering against mojibake, binary instruction offsets, and control codes.
         """
         records = []
         seen = set()
 
-        # Matches VM string instructions
-        for m in re.finditer(b'(\x60|\x1f|\x20)(.)\x00(.)', dec):
+        # Strict matching of string literals: \x60 [sub_op] \x00 [len]
+        for m in re.finditer(b'\x60.\x00.', dec):
             pos = m.start()
-            ln = m.group(3)[0]
-            if 1 <= ln <= 255 and pos + 4 + ln <= len(dec):
-                seg = dec[pos + 4 : pos + 4 + ln]
-                try:
-                    raw_txt = seg.replace(b'\x03', b'\n').replace(b'\x01', b'').decode('cp932').strip()
-                    # Filter for valid Japanese text (hiragana, katakana, or kanji)
-                    if any(0x3040 <= ord(c) <= 0x30ff or 0x4e00 <= ord(c) <= 0x9fff for c in raw_txt):
-                        # Filter resource file names
-                        if raw_txt.endswith(('.png', '.wav', '.ogg', '.uuc', '.rpo')):
-                            continue
-                        if raw_txt in seen:
-                            continue
-                        seen.add(raw_txt)
+            ln = dec[pos + 3]
+            if ln < 2 or pos + 4 + ln > len(dec):
+                continue
+            seg = dec[pos + 4 : pos + 4 + ln]
 
-                        # Separate speaker name from dialogue
-                        cm = re.match(r'^(?:【(.*?)】)?(.*)$', raw_txt, re.DOTALL)
-                        name = cm.group(1).strip() if cm and cm.group(1) else None
-                        msg = cm.group(2).strip() if cm else raw_txt
+            # Discard non-text prefixes if leading byte is punctuation, digit, or ASCII symbol
+            if seg[0] < 0x81 and seg[0] not in (0x20, 0x05, 0x03):
+                if seg[0] in b"0123456789`\\.<,'\"#$&*@?!-_/":
+                    continue
 
-                        records.append({
-                            "name": name,
-                            "message": msg
-                        })
-                except Exception:
-                    pass
+            try:
+                raw_txt = seg.replace(b'\x03', b'\n').replace(b'\x01', b'').replace(b'\x05', b'').decode('cp932').strip()
+
+                # Must contain Japanese kana or kanji
+                if not any(0x3040 <= ord(c) <= 0x30ff or 0x4e00 <= ord(c) <= 0x9fff for c in raw_txt):
+                    continue
+
+                # Filter resource file names
+                if raw_txt.endswith(('.png', '.wav', '.ogg', '.uuc', '.rpo')):
+                    continue
+
+                # Filter strings containing null bytes or unprintable control characters
+                if any(ord(c) < 32 and c not in '\r\n\t' for c in raw_txt):
+                    continue
+
+                # Filter garbage prefixes / leftover machine opcode fragments
+                if raw_txt.startswith(('`', '\\', '.', '0', '1', '2', '3', '#', '$', '%', '&', '\'', '(', ')', '<', '>', '?', 'B ', 'B\x00', 'K ')):
+                    continue
+
+                # Split multi-character lines into distinct dialogue entries
+                bracket_matches = list(re.finditer(r'【(.*?)】(「.*?」|[^【\n]+)', raw_txt))
+                if len(bracket_matches) > 1:
+                    for bm in bracket_matches:
+                        sub_name = bm.group(1).strip()
+                        sub_msg = bm.group(2).strip()
+                        sig = (sub_name, sub_msg)
+                        if sig not in seen:
+                            seen.add(sig)
+                            records.append({
+                                "name": sub_name,
+                                "message": sub_msg
+                            })
+                else:
+                    if raw_txt in seen:
+                        continue
+                    seen.add(raw_txt)
+
+                    # Separate speaker name from dialogue
+                    cm = re.match(r'^(?:【(.*?)】)?(.*)$', raw_txt, re.DOTALL)
+                    name = cm.group(1).strip() if cm and cm.group(1) else None
+                    msg = cm.group(2).strip() if cm else raw_txt
+
+                    records.append({
+                        "name": name,
+                        "message": msg
+                    })
+            except Exception:
+                pass
 
         return records
 
