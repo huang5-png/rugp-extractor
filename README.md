@@ -13,9 +13,12 @@ Works on visual novels powered by rUGP 6.x (such as *Haruko Maniax*, *Muv-Luv* s
 
 1. **Not a flat archive, but a C++ object tree**: `.rio` archives serialize complex MFC C++ class trees (`CrelicUnitedGameProject`, `CBoxOcean`, `COceanNode`, etc.). Existing tools like GARbro often break during deep `CBoxOcean` recursive deserialization due to engine version/schema discrepancies.
 2. **Hidden deep scenario nodes**: The root TOC table often only exposes system scripts (~100 lines), while 90%+ of the game's core dialogue blocks reside deep in non-indexed `ReadEncrypted` blocks.
-3. **VM Bytecode Format**: Scenario text is mixed with complex VM stack opcodes (`0x60`, `0x1F`, `0x20`), requiring custom opcode scanning to extract not just dialogues with quotation marks, but also inner thoughts and narrations.
+3. **VM Bytecode Format & Mojibake Pitfalls**: Scenario text is mixed with complex VM stack opcodes (`0x60`, parameters, and jump offsets). Naive pattern matching often triggers false positives (such as parameter bytes `0x20 0x00` being misread as length prefixes), causing severe byte shifts and Shift-JIS mojibake (e.g. `ﾂ F €Lｮ\`).
+4. **Nested Instruction Enclosures**: Certain event scenarios wrap text instructions inside parent macro blocks (`0x60 0x01 0x00 ...`), requiring strict boundary checks to prevent trailing nulls or machine opcode headers (`B \`4`, `K \`.`) from leaking into dialogue.
 
-This tool bypasses the unstable C++ object graph deserialization entirely by applying a **fast 4-phase alignment scan** directly on the `ReadEncrypted` stream cipher layer (`RioKey = 0x7E6B8CE2`), decrypting and extracting 100% of the game's text cleanly in seconds.
+This tool solves all of these problems:
+- Bypasses unstable C++ object graph deserialization entirely via a **fast 4-phase alignment scan** directly on the `ReadEncrypted` stream cipher layer (`RioKey = 0x7E6B8CE2`).
+- Employs **strict VM opcode parsing** (`0x60 [sub_op] 0x00 [len]`) with CP932 character space validation and control-code stripping, achieving **100% zero-mojibake dialogue extraction** in seconds.
 
 ---
 
@@ -23,7 +26,9 @@ This tool bypasses the unstable C++ object graph deserialization entirely by app
 
 - **Zero External Dependencies**: Written in pure Python standard library (`array`, `struct`, `re`, `json`).
 - **High Performance**: Vectorized 4-phase alignment chunk streaming scan (processes ~700MB in ~30 seconds).
+- **100% Zero-Mojibake Clean Extraction**: Eliminates byte-shifted Shift-JIS mojibake, binary instruction offsets, and unprintable control characters.
 - **GalTransl Native**: Dumps dialogues into standardized UTF-8 JSON format with speaker names and narrations cleanly separated.
+- **Multi-Speaker Line Splitting**: Automatically normalizes lines containing multiple speakers (e.g. `【太一】「...」\n【晴子】「...」`) into clean, independent JSON entries.
 - **Bi-directional Stream Cipher**: Includes both `read_encrypted` (decrypt) and `encrypt_block` (encrypt) functions with 100% roundtrip byte fidelity.
 
 ---
